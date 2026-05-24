@@ -43,10 +43,16 @@ async function testConnection() {
 }
 
 async function loadConfigFromDB() {
-  if (!USE_SB) return;
+  // Siempre cargar desde localStorage primero
+  try {
+    const saved = localStorage.getItem('machy_cfg');
+    if (saved) { Object.assign(CFG_SISTEMA, JSON.parse(saved)); }
+  } catch(e) {}
+  if (!USE_SB) { await loadConfigIntoForm(); return; }
   const { data, error } = await SB.from('configuracion').select('clave,valor');
   if (error) return;
   data.forEach(c => { CFG_SISTEMA[c.clave] = c.valor; });
+  try { localStorage.setItem('machy_cfg', JSON.stringify(CFG_SISTEMA)); } catch(e) {}
   await loadConfigIntoForm();
 }
 
@@ -156,6 +162,14 @@ let IAT = null;   // inactivity timer
 let WAT = null;   // warning timer
 
 function loginDemo(role) {
+  if (USE_SB) {
+    const usr = role === 'admin' ? 'admin' : role === 'vendedor' ? 'vendedor' : 'miguel';
+    const pwd = role === 'admin' ? 'admin123' : role === 'vendedor' ? 'vend123' : 'vend456';
+    document.getElementById('l-usr').value = usr;
+    document.getElementById('l-pas').value = pwd;
+    doLogin();
+    return;
+  }
   document.getElementById('btn-login').disabled = true;
   setTimeout(() => { CU = { ...DEMO_USERS[role] }; enterApp(); }, 350);
 }
@@ -329,6 +343,11 @@ const SEC_META = {
   config:    {title:'Configuración del Sistema',bc:'Configuración'},
 };
 
+function toggleSidebar() {
+  document.getElementById('sidebar').classList.toggle('open');
+  document.getElementById('sb-overlay').classList.toggle('show');
+}
+
 function goSec(name) {
   document.querySelectorAll('.sec').forEach(s  => s.classList.remove('active'));
   document.querySelectorAll('.ni').forEach(n   => n.classList.remove('active'));
@@ -346,7 +365,10 @@ function goSec(name) {
   if (name === 'catalogo')  renderCat(PRODS);
   if (name === 'usuarios')  renderUsers();
   if (name === 'reportes')  renderReports();
-  if (name === 'config')   { renderCategorias(); renderProveedores(); }
+  if (name === 'config')   { renderCategorias(); renderProveedores(); loadConfigIntoForm(); }
+  // Cerrar sidebar en móvil
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sb-overlay').classList.remove('show');
   checkHorario();
 }
 
@@ -371,7 +393,12 @@ async function loadProds() {
   try {
     const { data, error } = await SB.from('productos').select('*').order('nombre');
     if (error) throw error;
-    if (data && data.length) PRODS = data;
+    if (data && data.length) {
+      PRODS = data.map(p => ({
+        ...p,
+        proveedor_nombre: p.proveedor_nombre || p.proveedor || '',
+      }));
+    }
   } catch(e) { console.warn('loadProds fallback:', e.message); }
 }
 
@@ -379,7 +406,15 @@ async function loadVentas() {
   try {
     const { data, error } = await SB.from('ventas').select('*').order('created_at', {ascending:false}).limit(200);
     if (error) throw error;
-    if (data && data.length) VENTAS = data.map(v=>({...v, vendedor: v.vendedor || 'Empleado', items: v.items || [], total: parseFloat(v.total)||0}));
+    if (data && data.length) VENTAS = data.map(v=>({
+      ...v, vendedor: v.vendedor || 'Empleado',
+      items: (typeof v.items === 'string' ? JSON.parse(v.items) : v.items) || [],
+      total: parseFloat(v.total)||0,
+      subtotal: parseFloat(v.subtotal)||0,
+      descuento: parseFloat(v.descuento)||0,
+      cliente: v.cliente || 'VENTA AL CONTADO',
+      num_comp: v.num_comp || v.numero,
+    }));
   } catch(e) { console.warn('loadVentas fallback:', e.message); }
 }
 
@@ -392,7 +427,7 @@ async function loadUsersFromDB() {
         id: u.id, nombre: u.nombre, apellidos: u.apellidos,
         username: u.username, correo: u.correo, dni: u.dni || '',
         tel: u.telefono || '', rol: u.rol, turno: u.turno || 'completo',
-        activo: u.activo, av: (u.nombre[0]||'')+(u.apellidos[0]||'')
+        activo: u.activo !== false, av: (u.nombre[0]||'')+(u.apellidos[0]||'')
       }));
     }
   } catch(e) { console.warn('loadUsers fallback:', e.message); }
@@ -515,21 +550,38 @@ async function doLogin() {
   }
 }
 
+function isUUID(val) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val);
+}
+
+function isUUID(val) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val);
+}
+
 async function saveToSB(table, data, id) {
-  if (!USE_SB) return false;
+  if (!USE_SB) return true;
+  if (id && !isUUID(id)) return true;
+  const cleanData = {};
+  for (const [k, v] of Object.entries(data)) {
+    if (v !== null && v !== undefined) {
+      if ((k.endsWith('_id') || k === 'id') && typeof v === 'string' && !isUUID(v)) continue;
+      cleanData[k] = v;
+    }
+  }
+  if (Object.keys(cleanData).length === 0) return true;
   try {
     if (id) {
-      const { error } = await SB.from(table).update({...data, updated_at: new Date().toISOString()}).eq('id', id);
+      const { error } = await SB.from(table).update({...cleanData, updated_at: new Date().toISOString()}).eq('id', id);
       if (error) throw error;
     } else {
-      const { error } = await SB.from(table).insert([data]);
+      const { error } = await SB.from(table).insert([cleanData]);
       if (error) throw error;
     }
     return true;
   } catch (e) {
-    toast('Error Supabase: ' + e.message, 'error', '❌');
-    await registrarLog('error', 'database', `Error saveToSB(${table}): ${e.message}`);
-    return false;
+    console.warn('⚠️ saveToSB error ('+table+'):', e.message);
+    toast('Aviso: No se pudo guardar en la nube · ' + e.message, 'warning', '☁️');
+    return true;
   }
 }
 
@@ -687,17 +739,18 @@ function stockBadge(p) {
 // ══════════════════════════════════════════════════════════════════════
 // CRUD PRODUCTOS
 // ══════════════════════════════════════════════════════════════════════
-function resetProdForm() {
+async function resetProdForm() {
   ['p-id','p-cod','p-nom','p-prov','p-desc','p-cat-id'].forEach(id => setVal(id,''));
   setVal('p-cat',''); setVal('p-uni','unidad');
   ['p-pc','p-pv','p-stock'].forEach(id => setVal(id,''));
   setVal('p-smin','5');
   setText('mp-t','Registrar producto');
   setText('sp-txt','Registrar producto');
-  renderCategorias(); // refresh dropdown
+  await renderCategorias(); // refresh dropdown
 }
 
-function editProd(id) {
+async function editProd(id) {
+  await renderCategorias();
   const p = PRODS.find(x => x.id === id); if (!p) return;
   setVal('p-id',    p.id);
   setVal('p-cod',   p.codigo);
@@ -713,6 +766,14 @@ function editProd(id) {
   setVal('p-desc',  p.descripcion||'');
   setText('mp-t',   'Editar producto · RF-17');
   setText('sp-txt', 'Guardar cambios');
+  // Sincronizar p-cat-id con la opción seleccionada
+  const sel = document.getElementById('p-cat');
+  if (sel) {
+    const opt = sel.options[sel.selectedIndex];
+    if (opt?.getAttribute('data-id')) {
+      document.getElementById('p-cat-id').value = opt.getAttribute('data-id');
+    }
+  }
   openM('m-producto');
 }
 
@@ -728,32 +789,34 @@ async function saveProd() {
   if (!nombre || !codigo || !cat || isNaN(pv) || isNaN(pc) || isNaN(stock)) { toast('Completa los campos obligatorios','warning'); return; }
   if (pv < pc) { toast('El precio de venta no puede ser menor al de compra','warning'); return; }
 
+  const prov = getVal('p-prov').trim();
   const data = {
     codigo, nombre, descripcion:getVal('p-desc').trim(),
     categoria: cat, categoria_id: catId || null,
     unidad:getVal('p-uni'), precio_compra:pc, precio_venta:pv,
     stock, stock_minimo:parseInt(getVal('p-smin'))||5,
-    proveedor: getVal('p-prov').trim(), estado:'activo',
+    proveedor: prov, proveedor_nombre: prov, estado:'activo',
   };
 
   const eid = getVal('p-id');
 
-  // Save to Supabase or mock
+  // Save to Supabase (si conectado) y siempre a local
   if (eid) {
-    const ok = await saveToSB('productos', data, eid);
+    if (USE_SB) await saveToSB('productos', data, eid);
     const idx = PRODS.findIndex(p => p.id === eid);
     if (idx >= 0) PRODS[idx] = { ...PRODS[idx], ...data };
     toast('Producto actualizado · RF-17','success','✅');
+    closeM('m-producto');
+    loadAll();
   } else {
     if (PRODS.find(p => p.codigo === codigo)) { toast('Código de barras ya registrado · RF-16','error'); return; }
     const newId = 'p' + Date.now();
-    const ok = await saveToSB('productos', data);
+    if (USE_SB) await saveToSB('productos', data);
     PRODS.unshift({ id: newId, ...data });
     toast('Producto registrado · RF-16','success','✅');
+    closeM('m-producto');
+    loadAll();
   }
-
-  closeM('m-producto');
-  loadAll();
 }
 
 function confirmToggle(id) {
@@ -844,6 +907,8 @@ function renderCart() {
       <button class="ci-del" onclick="removeCart('${it.id}')">✕</button>
     </div>`).join('');
   recalc();
+  document.getElementById('v-vuelto-wrap').style.display = 'none';
+  document.getElementById('v-paga').value = '';
 }
 
 function recalc() {
@@ -962,6 +1027,163 @@ function anularVenta(id) {
 }
 
 // ══════════════════════════════════════════════════════════════════════
+// CONTROL DE ASISTENCIA MANUAL (RF-12, RF-30)
+// ══════════════════════════════════════════════════════════════════════
+function renderAsistenciaHoy() {
+  const el = document.getElementById('asist-status');
+  if (!el || !CU) return;
+  const hoy = new Date().toISOString().slice(0, 10);
+  const reg = ASISTENCIA.find(a => a.usuario_id === CU.id && a.fecha === hoy);
+  const entradaBtn = document.getElementById('btn-marcar-entrada');
+  const salidaBtn = document.getElementById('btn-marcar-salida');
+  if (reg) {
+    const tl = TURNOS[CU.turno || 'completo'];
+    const tard = reg.tardanza_min ? ` · Tardanza: ${reg.tardanza_min}min` : '';
+    el.innerHTML = `<strong style="color:var(--green)">✅ Registrado hoy</strong><br>
+      Entrada: <strong>${reg.hora_entrada || '—'}</strong> |
+      Salida: <strong>${reg.hora_salida || '—'}</strong> |
+      Turno: ${tl.label}${tard}`;
+    el.style.background = 'var(--green-l)';
+    el.style.color = 'var(--green)';
+    if (entradaBtn) entradaBtn.disabled = true;
+    if (salidaBtn) salidaBtn.disabled = !!reg.hora_salida;
+  } else {
+    el.innerHTML = '<strong style="color:var(--amber)">⏳ Sin registro hoy</strong><br>Marca tu entrada para iniciar el turno';
+    el.style.background = 'var(--amber-l)';
+    el.style.color = 'var(--amber)';
+    if (entradaBtn) entradaBtn.disabled = false;
+    if (salidaBtn) salidaBtn.disabled = true;
+  }
+}
+
+async function marcarEntrada() {
+  if (!CU) { toast('Inicia sesión primero','warning'); return; }
+  const hoy = new Date().toISOString().slice(0, 10);
+  if (ASISTENCIA.find(a => a.usuario_id === CU.id && a.fecha === hoy)) {
+    toast('Ya tienes un registro de entrada hoy','info'); return;
+  }
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2,'0');
+  const mm = String(now.getMinutes()).padStart(2,'0');
+  const hora = `${hh}:${mm}`;
+  const tl = TURNOS[CU.turno || 'completo'];
+  const [hi, mi] = tl.inicio.split(':').map(Number);
+  const mins = hh * 60 + mm;
+  const inicioMins = hi * 60 + mi;
+  const tardanza = Math.max(0, mins - inicioMins - 15);
+  const esTardanza = tardanza > 0;
+
+  const reg = {
+    id: 'a' + Date.now(), usuario_id: CU.id,
+    nombre: CU.nombre + ' ' + CU.apellidos,
+    fecha: hoy, hora_entrada: hora, hora_salida: null,
+    turno: CU.turno || 'completo',
+    horas: 0, tardanza_min: tardanza,
+    cumple_turno: false, estado_asistencia: esTardanza ? 'tardanza' : 'puntual',
+  };
+
+  if (USE_SB) {
+    await SB.from('asistencia').insert([{
+      usuario_id: CU.id, nombre: reg.nombre, fecha: hoy,
+      hora_entrada: hora, turno: CU.turno || 'completo',
+      tardanza_min: tardanza,
+      estado_asistencia: esTardanza ? 'tardanza' : 'puntual',
+    }]);
+  }
+  ASISTENCIA.unshift(reg);
+  renderAsistenciaHoy();
+  renderUsers();
+  toast(esTardanza ? `Entrada marcada con ${tardanza}min de tardanza` : 'Entrada marcada correctamente', esTardanza ? 'warning' : 'success', '✅');
+  await registrarLog('info', 'asistencia', `Entrada manual: ${CU.nombre} ${CU.apellidos}`, CU.id);
+}
+
+async function marcarSalida() {
+  if (!CU) { toast('Inicia sesión primero','warning'); return; }
+  const hoy = new Date().toISOString().slice(0, 10);
+  const reg = ASISTENCIA.find(a => a.usuario_id === CU.id && a.fecha === hoy);
+  if (!reg) { toast('No hay registro de entrada hoy','warning'); return; }
+  if (reg.hora_salida) { toast('Ya registraste salida hoy','info'); return; }
+
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2,'0');
+  const mm = String(now.getMinutes()).padStart(2,'0');
+  const hora = `${hh}:${mm}`;
+  const horasTrab = ((hh*60+mm) - (parseInt(reg.hora_entrada.split(':')[0])*60 + parseInt(reg.hora_entrada.split(':')[1]))) / 60;
+  const cumple = horasTrab >= 5;
+
+  reg.hora_salida = hora;
+  reg.horas = parseFloat(horasTrab.toFixed(2));
+  reg.cumple_turno = cumple;
+
+  if (USE_SB) {
+    await SB.from('asistencia').update({
+      hora_salida: hora, horas: reg.horas, cumple_turno: cumple,
+    }).eq('id', reg.id);
+  }
+  renderAsistenciaHoy();
+  renderUsers();
+  toast(`Salida marcada · ${reg.horas.toFixed(1)}h trabajadas`, 'success', '🔴');
+  await registrarLog('info', 'asistencia', `Salida manual: ${CU.nombre} ${CU.apellidos}`, CU.id);
+}
+
+function cargarSelectAsistencia() {
+  const sel = document.getElementById('asist-usuario');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">Seleccionar empleado…</option>' +
+    USERS.filter(u => u.rol === 'vendedor' && u.activo)
+      .map(u => `<option value="${u.id}" data-nom="${u.nombre} ${u.apellidos}">${u.nombre} ${u.apellidos}</option>`).join('');
+}
+
+async function registrarAsistenciaAdmin() {
+  if (CU?.rol !== 'admin') { toast('Solo administradores','error'); return; }
+  const sel = document.getElementById('asist-usuario');
+  const uid = sel?.value;
+  const tipo = document.getElementById('asist-tipo')?.value;
+  if (!uid) { toast('Selecciona un empleado','warning'); return; }
+  const u = USERS.find(x => x.id === uid);
+  if (!u) return;
+  const hoy = new Date().toISOString().slice(0, 10);
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2,'0');
+  const mm = String(now.getMinutes()).padStart(2,'0');
+  const hora = `${hh}:${mm}`;
+
+  let reg = ASISTENCIA.find(a => a.usuario_id === uid && a.fecha === hoy);
+
+  if (tipo === 'entrada') {
+    if (reg && reg.hora_entrada) { toast(`${u.nombre} ya tiene entrada hoy`,'info'); return; }
+    if (!reg) {
+      reg = { id: 'a' + Date.now(), usuario_id: uid, nombre: u.nombre + ' ' + u.apellidos,
+        fecha: hoy, hora_entrada: hora, hora_salida: null, turno: u.turno || 'completo',
+        horas: 0, tardanza_min: 0, cumple_turno: false, estado_asistencia: 'puntual' };
+      ASISTENCIA.unshift(reg);
+    } else {
+      reg.hora_entrada = hora;
+    }
+    if (USE_SB) await SB.from('asistencia').upsert({
+      usuario_id: uid, nombre: reg.nombre, fecha: hoy,
+      hora_entrada: hora, turno: u.turno || 'completo',
+      estado_asistencia: 'puntual',
+    }, { onConflict: 'id' });
+    toast(`Entrada registrada para ${u.nombre} ${u.apellidos}`,`success`,`✅`);
+  } else {
+    if (!reg || !reg.hora_entrada) { toast(`${u.nombre} no tiene entrada hoy`,'warning'); return; }
+    if (reg.hora_salida) { toast(`${u.nombre} ya tiene salida hoy`,'info'); return; }
+    const minEnt = parseInt(reg.hora_entrada.split(':')[0])*60 + parseInt(reg.hora_entrada.split(':')[1]);
+    const horasTrab = ((hh*60+mm) - minEnt) / 60;
+    reg.hora_salida = hora;
+    reg.horas = parseFloat(horasTrab.toFixed(2));
+    reg.cumple_turno = horasTrab >= 5;
+    if (USE_SB) await SB.from('asistencia').update({
+      hora_salida: hora, horas: reg.horas, cumple_turno: reg.cumple_turno,
+    }).eq('id', reg.id);
+    toast(`Salida registrada para ${u.nombre} ${u.apellidos} · ${reg.horas.toFixed(1)}h`,'success','🔴');
+  }
+  renderAsistenciaHoy();
+  renderUsers();
+}
+
+// ══════════════════════════════════════════════════════════════════════
 // USUARIOS
 // ══════════════════════════════════════════════════════════════════════
 function resetUserForm() {
@@ -979,6 +1201,8 @@ function onRolChange() {
 }
 
 function renderUsers() {
+  renderAsistenciaHoy();
+  cargarSelectAsistencia();
   document.getElementById('user-cards').innerHTML = USERS.map(u => {
     const tl = TURNOS[u.turno || 'completo'];
     return `<div class="uc${!u.activo?' inactive':''}">
@@ -1186,6 +1410,10 @@ async function renderCategorias() {
   if (sel) {
     sel.innerHTML = '<option value="">Seleccionar…</option>' +
       cats.filter(c=>c.activo!==false).map(c => `<option value="${c.nombre}" data-id="${c.id}">${c.nombre}</option>`).join('');
+    sel.onchange = function() {
+      const opt = sel.options[sel.selectedIndex];
+      document.getElementById('p-cat-id').value = opt?.getAttribute('data-id') || '';
+    };
   }
 }
 
@@ -1260,18 +1488,18 @@ async function saveCfg() {
     { clave:'descuento_max_vendedor',valor:getVal('cfg-dcto'), tipo:'number' },
   ];
 
+  // Siempre actualizar CFG_SISTEMA y localStorage
+  configs.forEach(c => { CFG_SISTEMA[c.clave] = c.valor; });
+  try { localStorage.setItem('machy_cfg', JSON.stringify(CFG_SISTEMA)); } catch(e) {}
+
   if (USE_SB) {
     const { error } = await SB.from('configuracion').upsert(configs, { onConflict: 'clave' });
-    if (error) { toast('Error al guardar configuración: ' + error.message, 'error', '❌'); return; }
-    configs.forEach(c => { CFG_SISTEMA[c.clave] = c.valor; });
-  } else {
-    configs.forEach(c => { CFG_SISTEMA[c.clave] = c.valor; });
+    if (error) { toast('Error Supabase: ' + error.message, 'warning', '⚠️'); }
   }
   toast('Configuración guardada correctamente · RF-32','success','💾');
 }
 
 async function loadConfigIntoForm() {
-  if (!USE_SB) return;
   const map = {
     nombre_negocio:'cfg-nom', ruc:'cfg-ruc', direccion:'cfg-dir',
     telefono:'cfg-tel', correo:'cfg-mail', logo_url:'cfg-logo',
@@ -1311,7 +1539,7 @@ function startScan() {
   Html5Qrcode.getCameras()
     .then(cams => {
       if (!cams.length) { setText('scan-st','No se encontraron cámaras. Usa ingreso manual.'); return; }
-      const cam = cams.length > 1 ? cams[1].id : cams[0].id;
+      const cam = cams[0].id;
       html5QR.start(cam, { fps:15, qrbox:{width:170,height:170}, aspectRatio:1.0 },
         code => {
           scannedCode = code;
@@ -1362,31 +1590,103 @@ function processCode(code) {
 }
 
 // ══════════════════════════════════════════════════════════════════════
-// BOLETA PDF (RF-25)
+// COMPROBANTES (RF-25) — Boleta A4 / Ticket térmico 80mm
 // ══════════════════════════════════════════════════════════════════════
-function generarBoletaPDF(venta) {
+function imprimirComprobante(venta, tipo) {
   const neg = { ...CFG_SISTEMA };
+  const W = 40;
+  const center2 = t => { const p = Math.max(0, W - t.length); return ' '.repeat(Math.floor(p/2)) + t + ' '.repeat(Math.ceil(p/2)); };
+  const right2 = t => ' '.repeat(Math.max(0, W - t.length)) + t;
+  const left2 = t => t + ' '.repeat(Math.max(0, W - t.length));
   const fecha = new Date(venta.fecha || venta.created_at || Date.now());
   const opts = { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' };
-  const itemsRows = (venta.items || venta.detalle || []).map(it => `
-    <tr>
-      <td style="padding:6px 8px;text-align:left">${it.nombre || it.nombre_producto || 'Producto'}</td>
-      <td style="padding:6px 8px;text-align:center">${it.cantidad || it.qty || 1}</td>
-      <td style="padding:6px 8px;text-align:right">S/ ${fmt(it.precio_venta || it.precio_unitario)}</td>
-      <td style="padding:6px 8px;text-align:right">S/ ${fmt((it.precio_venta||it.precio_unitario||0)*(it.cantidad||it.qty||1))}</td>
-    </tr>`).join('') || '<tr><td colspan="4" style="padding:8px;text-align:center;color:#999">Sin detalle</td></tr>';
+  const items = venta.items || venta.detalle || [];
+  const num = String(venta.num_comp||venta.numero||'').padStart(6,'0');
+  const cliente = venta.cliente || 'VENTA AL CONTADO';
 
+  const itemsRows = items.map(it => {
+    const nom = it.nombre || it.nombre_producto || 'Producto';
+    const cant = it.cantidad || it.qty || 1;
+    const pu = it.precio_venta || it.precio_unitario || 0;
+    const st = pu * cant;
+    if (tipo === 'ticket') {
+      const qtyLine = nom + ' x' + cant;
+      const priceLine = 'S/ ' + fmt(pu) + ' c/u → S/ ' + fmt(st);
+      return left2(qtyLine) + '\n' + right2(priceLine);
+    }
+    return `<tr><td style="padding:6px 8px;text-align:left">${nom}</td>
+      <td style="padding:6px 8px;text-align:center">${cant}</td>
+      <td style="padding:6px 8px;text-align:right">S/ ${fmt(pu)}</td>
+      <td style="padding:6px 8px;text-align:right">S/ ${fmt(st)}</td></tr>`;
+  }).join(tipo === 'ticket' ? '\n' : '');
+
+  const totalV = parseFloat(venta.total || 0);
+  const subV = parseFloat(venta.subtotal || 0);
+  const dctoV = parseFloat(venta.descuento || 0);
+  const pagaConV = parseFloat(venta.paga_con || 0);
+  const vueltoV = parseFloat(venta.vuelto || 0);
+
+  if (tipo === 'ticket') {
+    const line = '━'.repeat(W);
+    const igv = totalV * 0.18 / 1.18;
+
+    const txt = [
+      center2(neg.nombre_negocio || 'Librería Machy'),
+      center2('RUC: ' + (neg.ruc || '20XXXXXXXXXX')),
+      center2(neg.direccion || 'Av. Principal 123, Lima'),
+      center2('Tel: ' + (neg.telefono || '01-XXXXXXX')),
+      line,
+      center2('TICKET DE VENTA #' + num),
+      center2(fecha.toLocaleDateString('es-PE', opts)),
+      left2('Vendedor: ' + (venta.vendedor || '—')),
+      left2('Cliente: ' + cliente),
+      line,
+      itemsRows,
+      line,
+      left2('Subtotal:' + right2('S/ ' + fmt(subV)).slice(10)),
+      dctoV > 0 ? left2('Descuento:' + right2('-S/ ' + fmt(dctoV)).slice(10)) : '',
+      left2('IGV (18%):' + right2('S/ ' + fmt(igv)).slice(10)),
+      left2('TOTAL:' + right2('S/ ' + fmt(totalV)).slice(10)),
+      pagaConV > 0 ? left2('Pagó con:' + right2('S/ ' + fmt(pagaConV)).slice(10)) : '',
+      vueltoV > 0 ? left2('Vuelto:' + right2('S/ ' + fmt(vueltoV)).slice(10)) : '',
+      line,
+      center2('¡Gracias por su compra!'),
+      center2(neg.nombre_negocio || 'Librería Machy'),
+      center2(new Date().toLocaleString('es-PE')),
+      line,
+      '',
+    ].filter(Boolean).join('\n');
+
+    const iframe = document.createElement('iframe');
+    iframe.style.cssText = 'position:fixed;top:-9999px;left:0;width:1px;height:1px;border:none;opacity:0';
+    document.body.appendChild(iframe);
+    const doc = iframe.contentDocument || iframe.contentWindow.document;
+    doc.open();
+    doc.write(`<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Ticket #${num}</title>
+<style>
+  @page { size: 80mm 297mm; margin: 2mm; }
+  body { font-family: 'Courier New','Lucida Console',monospace; font-size: 10px; color: #000; margin: 0; padding: 4px; white-space: pre; line-height: 1.25; }
+  @media print { body { padding: 0; } }
+</style></head><body>${txt}</body></html>`);
+    doc.close();
+    iframe.contentWindow.focus();
+    iframe.contentWindow.print();
+    setTimeout(() => { if (iframe.parentNode) iframe.parentNode.removeChild(iframe); }, 3000);
+    return;
+  }
+
+  // Boleta A4
   const logoHtml = neg.logo_url
     ? `<img src="${neg.logo_url}" style="max-height:64px;margin-bottom:8px" alt="Logo"/>`
     : '';
 
   const html = `<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><title>Boleta #${venta.num_comp||venta.numero}</title>
+<html><head><meta charset="UTF-8"><title>Boleta #${num}</title>
 <style>
   @page { margin: 10mm; }
   body { font-family: 'Courier New', monospace; font-size: 12px; color: #222; margin: 0; padding: 16px; }
   .header { text-align: center; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 2px dashed #333; }
-  .header h2 { margin: 4px 0; font-size: 18px; }
   .header .brand { font-size: 20px; font-weight: bold; letter-spacing: 1px; }
   .header p { margin: 2px 0; font-size: 11px; color: #555; }
   .info { margin-bottom: 12px; font-size: 11px; }
@@ -1397,6 +1697,7 @@ function generarBoletaPDF(venta) {
   .totals { text-align: right; margin-top: 8px; padding-top: 8px; border-top: 2px dashed #333; }
   .totals div { margin: 3px 0; font-size: 12px; }
   .totals .grand { font-size: 16px; font-weight: bold; }
+  .totals .payment { margin-top: 12px; padding-top: 8px; border-top: 1px solid #ccc; font-size: 12px; }
   .footer { text-align: center; margin-top: 20px; padding-top: 12px; border-top: 1px dashed #999; font-size: 10px; color: #888; }
   @media print { body { padding: 0; } }
 </style></head><body>
@@ -1408,18 +1709,19 @@ function generarBoletaPDF(venta) {
     <p>Tel: ${neg.telefono || '01-XXXXXXX'} · ${neg.correo || ''}</p>
   </div>
   <div class="info">
-    <div><span>BOLETA DE VENTA</span><span>#${String(venta.num_comp||venta.numero).padStart(6,'0')}</span></div>
+    <div><span>BOLETA DE VENTA</span><span>#${num}</span></div>
     <div><span>Fecha:</span><span>${fecha.toLocaleDateString('es-PE', opts)}</span></div>
     <div><span>Vendedor:</span><span>${venta.vendedor || '—'}</span></div>
-    <div><span>Cliente:</span><span>${venta.cliente || 'VENTA AL CONTADO'}</span></div>
+    <div><span>Cliente:</span><span>${cliente}</span></div>
   </div>
   <table><thead><tr><th>Producto</th><th>Cant.</th><th>P.Unit</th><th>Subtotal</th></tr></thead>
   <tbody>${itemsRows}</tbody></table>
   <div class="totals">
-    <div>Subtotal: S/ ${fmt(venta.subtotal || 0)}</div>
-    ${venta.descuento > 0 ? `<div>Descuento: -S/ ${fmt(venta.descuento)}</div>` : ''}
-    <div>IGV (18%): S/ ${fmt(venta.total ? venta.total * 0.18 / 1.18 : 0)}</div>
-    <div class="grand">TOTAL: S/ ${fmt(venta.total || 0)}</div>
+    <div>Subtotal: S/ ${fmt(parseFloat(venta.subtotal || 0))}</div>
+    ${parseFloat(venta.descuento||0) > 0 ? `<div>Descuento: -S/ ${fmt(venta.descuento)}</div>` : ''}
+    <div>IGV (18%): S/ ${fmt(totalV ? totalV * 0.18 / 1.18 : 0)}</div>
+    <div class="grand">TOTAL: S/ ${fmt(totalV)}</div>
+    ${pagaConV > 0 ? `<div class="payment"><div>Pagó con: S/ ${fmt(pagaConV)}</div>${vueltoV > 0 ? `<div style="font-weight:700;color:#2563eb">Vuelto: S/ ${fmt(vueltoV)}</div>` : ''}</div>` : ''}
   </div>
   <div class="footer">
     <p>¡Gracias por su compra!</p>
@@ -1440,52 +1742,79 @@ function generarBoletaPDF(venta) {
   setTimeout(() => { if (iframe.parentNode) iframe.parentNode.removeChild(iframe); }, 3000);
 }
 
-function confirmarVentaConBoleta() {
-  if (!cart.length) { toast('El carrito está vacío','warning'); return; }
-  const { sub, dcto, net } = recalc();
-  const maxDcto = parseFloat(CFG_SISTEMA.descuento_max_vendedor) || MACHY_CONFIG.ventas.descuentoMaxVendedor || 10;
-  if (CU?.rol === 'vendedor' && dcto > sub * maxDcto / 100) {
-    toast(`Descuento excede el máximo permitido (${maxDcto}%) · RF-23`, 'warning', '⚠️');
-    return;
-  }
-  const emiteBoleta = net >= (parseFloat(CFG_SISTEMA.monto_minimo_boleta) || 5);
-  const num = VENTAS.length + 1;
-  const venta = {
-    id: 'v' + Date.now(), numero: num, num_comp: num,
-    vendedor_id: CU.id, vendedor: CU.nombre + ' ' + CU.apellidos,
-    items: [...cart.map(c => ({ ...c, cantidad: c.qty }))],
-    cliente: 'VENTA AL CONTADO',
-    subtotal: sub, descuento: dcto, total: parseFloat(net.toFixed(2)),
-    estado: 'confirmada', boleta: emiteBoleta, boleta_generada: emiteBoleta,
-    fecha: new Date().toISOString(),
-  };
+function generarBoletaPDF(venta) { imprimirComprobante(venta, 'boleta'); }
+function generarTicketPDF(venta)  { imprimirComprobante(venta, 'ticket'); }
 
-  cart.forEach(ci => {
-    const p = PRODS.find(x => x.id === ci.id);
-    if (p) {
-      p.stock = Math.max(0, p.stock - ci.qty);
-      saveToSB('productos', { stock: p.stock }, p.id);
+function calcVuelto() {
+  const paga = parseFloat(document.getElementById('v-paga')?.value) || 0;
+  const total = parseFloat(document.getElementById('c-total')?.textContent?.replace('S/ ', '')) || 0;
+  const wrap = document.getElementById('v-vuelto-wrap');
+  if (paga >= total && total > 0) {
+    document.getElementById('c-vuelto').textContent = 'S/ ' + fmt(paga - total);
+    wrap.style.display = 'block';
+  } else {
+    wrap.style.display = 'none';
+  }
+}
+
+async function confirmarVentaConBoleta() {
+  try {
+    if (!cart.length) { toast('El carrito está vacío','warning'); return; }
+    const { sub, dcto, net } = recalc();
+    const maxDcto = parseFloat(CFG_SISTEMA.descuento_max_vendedor) || MACHY_CONFIG.ventas.descuentoMaxVendedor || 10;
+    if (CU?.rol === 'vendedor' && dcto > sub * maxDcto / 100) {
+      toast(`Descuento excede el máximo permitido (${maxDcto}%) · RF-23`, 'warning', '⚠️');
+      return;
     }
-  });
+    const nomCliente = document.getElementById('v-cliente')?.value?.trim() || '';
+    const pagaCon = parseFloat(document.getElementById('v-paga')?.value) || 0;
+    const vuelto = pagaCon >= net ? parseFloat((pagaCon - net).toFixed(2)) : 0;
+    const emiteBoleta = net >= (parseFloat(CFG_SISTEMA.monto_minimo_boleta) || 5);
+    const num = VENTAS.length + 1;
+    const venta = {
+      id: 'v' + Date.now(), numero: num, num_comp: num,
+      vendedor_id: CU.id, vendedor: CU.nombre + ' ' + CU.apellidos,
+      items: [...cart.map(c => ({ ...c, cantidad: c.qty }))],
+      cliente: nomCliente || 'VENTA AL CONTADO',
+      subtotal: sub, descuento: dcto, total: parseFloat(net.toFixed(2)),
+      paga_con: pagaCon, vuelto: vuelto,
+      estado: 'confirmada', boleta: emiteBoleta, boleta_generada: emiteBoleta,
+      fecha: new Date().toISOString(),
+    };
 
-  saveToSB('ventas', {
-    vendedor_id: CU.id, vendedor: venta.vendedor,
-    subtotal: sub, descuento: dcto, total: parseFloat(net.toFixed(2)),
-    igv: parseFloat((net * 0.18 / 1.18).toFixed(2)),
-    estado: 'confirmada', boleta: emiteBoleta, boleta_generada: emiteBoleta,
-    items: venta.items,
-  });
+    await Promise.all(cart.map(ci => {
+      const p = PRODS.find(x => x.id === ci.id);
+      if (!p) return;
+      p.stock = Math.max(0, p.stock - ci.qty);
+      return saveToSB('productos', { stock: p.stock }, p.id);
+    }));
 
-  VENTAS.unshift(venta);
-  cart = [];
-  renderCart();
-  loadAll();
-  toast(`Venta #${num} confirmada · RF-24`, 'success', '✅');
-  if (emiteBoleta) {
-    setTimeout(() => generarBoletaPDF(venta), 500);
-    toast('Boleta generada · RF-25', 'info', '🧾');
+    await saveToSB('ventas', {
+      vendedor_id: CU.id, vendedor: venta.vendedor, cliente: venta.cliente,
+      subtotal: sub, descuento: dcto, total: parseFloat(net.toFixed(2)),
+      paga_con: pagaCon, vuelto: vuelto,
+      igv: parseFloat((net * 0.18 / 1.18).toFixed(2)),
+      num_comp: num, numero: num,
+      estado: 'confirmada', boleta: emiteBoleta, boleta_generada: emiteBoleta,
+      items: venta.items,
+    });
+
+    VENTAS.unshift(venta);
+    cart = [];
+    renderCart();
+    renderDash();
+    toast(`Venta #${num} confirmada · RF-24`, 'success', '✅');
+    if (emiteBoleta) {
+      const tipoComp = document.getElementById('v-comprobante')?.value || 'ticket';
+      setTimeout(() => imprimirComprobante(venta, tipoComp), 500);
+      toast(tipoComp === 'ticket' ? 'Ticket térmico generado · RF-25' : 'Boleta A4 generada · RF-25', 'info', '🧾');
+      document.getElementById('v-cliente').value = '';
+    }
+    goSec('historial');
+  } catch(e) {
+    console.error('Error al confirmar venta:', e);
+    toast('Error inesperado al confirmar venta: ' + e.message, 'error', '❌');
   }
-  goSec('historial');
 }
 
 // ══════════════════════════════════════════════════════════════════════
