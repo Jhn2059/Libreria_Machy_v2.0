@@ -278,9 +278,13 @@
       <span id="status-msg">Conectando a Supabase…</span>
     </div>
 
+    <!-- SIDEBAR OVERLAY (mobile) -->
+    <div class="sb-overlay" id="sb-overlay" onclick="toggleSidebar()"></div>
+
     <!-- TOPBAR -->
     <div class="topbar">
       <div class="tb-l">
+        <button class="tb-hamburger" onclick="toggleSidebar()" title="Menú">☰</button>
         <div class="tb-title" id="tb-title">Dashboard</div>
         <div class="tb-bc">Machy SVM <span>›</span> <span id="tb-sec">Inicio</span></div>
       </div>
@@ -349,15 +353,38 @@
             </div>
             <div class="cart-body" id="cart-body"><div class="cart-empty"><div>🛒</div>Agrega productos al carrito</div></div>
             <div class="cart-ft">
+              <div style="margin-bottom:10px">
+                <label class="fl" style="font-size:.7rem;margin-bottom:4px;display:block">Nombre del cliente (opcional)</label>
+                <input type="text" id="v-cliente" class="fi" placeholder="Ingrese el nombre del cliente" style="font-size:.8rem;padding:7px 10px"/>
+              </div>
               <div class="dcto-wrap">
                 <input type="number" id="dcto-v" placeholder="Desc." min="0" oninput="recalc()"/>
                 <select id="dcto-t" onchange="recalc()"><option value="pct">%</option><option value="monto">S/</option></select>
                 <button class="btn btn-outline btn-sm" onclick="recalc()">Aplicar</button>
               </div>
+              <div style="margin: 8px 0 4px;display:flex;gap:6px;align-items:center">
+                <label class="fl" style="font-size:.7rem;margin:0">Comprobante:</label>
+                <select id="v-comprobante" class="fs" style="flex:1;font-size:.78rem;padding:5px 28px 5px 8px">
+                  <option value="ticket">🧾 Ticket térmico (80mm)</option>
+                  <option value="boleta">📄 Boleta (A4)</option>
+                </select>
+              </div>
               <div class="cart-row"><span>Subtotal</span><span class="cv" id="c-sub">S/ 0.00</span></div>
               <div class="cart-row"><span>Descuento</span><span class="cv" id="c-dcto" style="color:var(--red)">- S/ 0.00</span></div>
               <div class="cart-row"><span>IGV (18%)</span><span class="cv" id="c-igv">S/ 0.00</span></div>
               <div class="cart-row total-row"><span>TOTAL</span><span class="cv" id="c-total" style="font-size:1.1rem;color:var(--navy-2)">S/ 0.00</span></div>
+              <div class="cart-row" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--slate-3)">
+                <span style="font-size:.8rem">Pagó con</span>
+                <div class="pfx" style="width:120px"><span class="px">S/</span>
+                  <input type="number" id="v-paga" class="fi" placeholder="0.00" min="0" step="0.10" style="font-size:.8rem;padding:4px 6px 4px 22px;font-family:var(--fm)" oninput="calcVuelto()"/>
+                </div>
+              </div>
+              <div id="v-vuelto-wrap" style="display:none">
+                <div class="cart-row" style="font-size:.9rem;font-weight:700;color:var(--green)">
+                  <span>🔄 Vuelto</span>
+                  <span class="cv" id="c-vuelto" style="font-family:var(--fm);color:var(--green)">S/ 0.00</span>
+                </div>
+              </div>
               <button class="btn btn-navy btn-full" style="margin-top:13px" id="btn-confirmar" disabled onclick="confirmarVentaConBoleta()">✅ Confirmar venta</button>
               <button class="btn btn-ghost btn-full btn-sm" style="margin-top:6px" onclick="clearCart()">Cancelar venta</button>
             </div>
@@ -424,6 +451,34 @@
         <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:18px;flex-wrap:wrap;gap:12px">
           <div><h3 style="font-family:var(--fw);font-size:1.1rem;font-weight:700;color:var(--navy)">Gestión de usuarios · RF-06 al RF-09</h3><p style="font-size:.76rem;color:var(--slate-2);margin-top:2px">HU-05, HU-06, HU-07 · Control de acceso basado en roles (RBAC)</p></div>
           <button class="btn btn-navy" onclick="openM('m-usuario');resetUserForm()">➕ Nuevo usuario</button>
+        </div>
+        <!-- ══ CONTROL DE ASISTENCIA ══ -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px">
+          <div class="tbl" style="padding:16px 20px">
+            <h4 style="font-family:var(--fw);font-size:.95rem;font-weight:700;color:var(--navy);margin-bottom:6px">⏰ Mi asistencia hoy</h4>
+            <p style="font-size:.78rem;color:var(--slate-2);margin-bottom:12px">Registra tu entrada y salida manualmente</p>
+            <div id="asist-status" style="font-size:.84rem;margin-bottom:12px;padding:10px 12px;border-radius:var(--r3);background:var(--slate-5);color:var(--slate-2)">Cargando…</div>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn-green btn-full" id="btn-marcar-entrada" onclick="marcarEntrada()">✅ Marcar entrada</button>
+              <button class="btn btn-gold btn-full" id="btn-marcar-salida" onclick="marcarSalida()">🔴 Marcar salida</button>
+            </div>
+          </div>
+          <div class="tbl" style="padding:16px 20px">
+            <h4 style="font-family:var(--fw);font-size:.95rem;font-weight:700;color:var(--navy);margin-bottom:6px">📋 Registro rápido (admin)</h4>
+            <p style="font-size:.78rem;color:var(--slate-2);margin-bottom:12px">Registrar asistencia para cualquier empleado</p>
+            <div style="display:flex;gap:6px;margin-bottom:8px">
+              <select id="asist-usuario" class="fs" style="flex:1;font-size:.8rem;padding:6px 28px 6px 8px">
+                <option value="">Seleccionar empleado…</option>
+              </select>
+            </div>
+            <div style="display:flex;gap:6px">
+              <select id="asist-tipo" class="fs" style="width:110px;font-size:.8rem;padding:6px 28px 6px 8px">
+                <option value="entrada">Entrada</option>
+                <option value="salida">Salida</option>
+              </select>
+              <button class="btn btn-navy btn-sm" onclick="registrarAsistenciaAdmin()">Registrar</button>
+            </div>
+          </div>
         </div>
         <div class="user-cards" id="user-cards"></div>
         <div class="tbl">
